@@ -1,0 +1,23 @@
+#version @VERSION_GLSL@
+
+attribute vec4 vertex;
+attribute vec4 color;
+uniform mat4 mvp;
+
+varying lowp vec4 vColor;
+
+void main() {
+	// Convert to sRGB
+	vColor.xyz = color.xyz;	
+	
+	for(int i = 0; i < 3; i++) {
+		if (vColor[i] <= 0.0031308)
+			vColor[i] = 12.92*vColor[i];
+		else
+			vColor[i] = 1.055*pow(vColor[i], 0.41666666) + 0.055;		
+	}	
+	vColor.w = 1.0;
+
+	gl_Position = mvp * vertex;
+	gl_PointSize = min(20.0, 20.0/gl_Position.z);
+}

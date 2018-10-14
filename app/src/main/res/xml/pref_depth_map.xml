@@ -1,0 +1,17 @@
+<PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android">
+    <vsense.ar.DecimalNumberPickerPreference
+        android:key="dm_confidence"
+        android:title="Min. Confidence"
+        android:summary="Minimal usable confidence"
+        android:defaultValue="1.0"
+        min="0.0"
+        max="1.0"
+        step="0.1"
+        length="3"/>
+
+    <CheckBoxPreference
+        android:key="dm_fill_holes"
+        android:title="Fill holes"
+        android:summary="Enable or disable hole filling"
+        android:defaultValue="true" />
+</PreferenceScreen>

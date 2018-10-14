@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string-array name="render_object_array">
+        <item>Bunny</item>
+        <item>Rafa</item>
+        <!--<item>Spot</item>
+        <item>Nefertiti</item>-->
+        <item>Dragon</item>
+        <item>Morty</item>
+    </string-array>
+
+    <string-array name="render_object_values_array">
+        <item>bunny</item>
+        <item>rafa</item>
+        <!--<item>spot</item>
+        <item>nefertiti</item>-->
+        <item>dragon</item>
+        <item>morty</item>
+    </string-array>
+
+    <string-array name="render_cc_mode_array">
+        <item>Video</item>
+        <item>Virtual Object</item>
+    </string-array>
+
+    <string-array name="render_cc_mode_values_array">
+        <item>vd</item>
+        <item>vo</item>
+    </string-array>
+</resources>

@@ -1,0 +1,27 @@
+<PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android">
+    <CheckBoxPreference
+        android:key="cc_enable"
+        android:title="Enable"
+        android:summary="Enable or disable color correction"
+        android:defaultValue="true" />
+
+    <vsense.ar.DecimalNumberPickerPreference
+        android:key="cc_max_error"
+        android:title="Max. mean squared error"
+        android:summary="Maximum allowed mean squared error"
+        android:defaultValue="0.05"
+        min="0.002"
+        max="0.1"
+        step="0.002"
+        length="5" />
+
+    <vsense.ar.NumberPickerPreference
+        android:key="cc_min_pts"
+        android:title="Minimum number of points required"
+        android:summary="Minimum number of points required to try a color correction"
+        android:defaultValue="500"
+        min="100"
+        max="2000"
+        step="100" />
+
+</PreferenceScreen>

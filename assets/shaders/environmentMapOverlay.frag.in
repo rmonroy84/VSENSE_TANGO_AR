@@ -1,0 +1,63 @@
+#version @VERSION_GLSL@
+
+precision highp float;
+precision highp int;
+uniform sampler2D textureImg;
+
+in vec2 f_textureCoords;
+
+out vec4 fragColor;
+
+const float Gamma = 2.4;
+const float InvGamma = 1.0/Gamma;
+
+vec3 linRGB2sRGB(in vec3 rgb) {
+	vec3 sRGB = rgb;
+
+	for (int i = 0; i < 3; i++) {
+		if (sRGB[i] <= 0.0031308)
+			sRGB[i] *= 12.92;
+		else
+			sRGB[i] = 1.055*pow(sRGB[i], InvGamma) - 0.055;
+	}
+
+	return sRGB;
+}
+
+void main() {
+	vec2 coords = f_textureCoords.xy;
+	coords.x = 1.0 - coords.x;
+		
+	if(coords.y < 0.4444) {
+		coords.y = coords.y/0.4444;
+
+		vec3 sRGB = linRGB2sRGB(texture(textureImg, coords).rgb);
+		fragColor = vec4(sRGB, 1.0);
+	} else if(coords.y > 0.5555) {
+		coords.y = coords.y - 0.5555;
+		coords.y = coords.y/0.4444;
+
+		float depth = texture(textureImg, coords).w;
+		float absDepth = abs(depth);
+
+		// Uncomment for colored depth map
+		/*if(absDepth > 0.0) {
+			absDepth = (4.0 - absDepth)/4.0;
+
+			if(depth < 0.0)
+				fragColor = vec4(0.0, 0.0, absDepth, 1.0);
+			else
+				fragColor = vec4(0.0, absDepth, 0.0, 1.0);
+		} else			
+			fragColor = vec4(1.0, 0.0, 0.0, 1.0);*/
+
+		if(absDepth > 0.0) {
+			absDepth = (4.0 - absDepth)/4.0;
+			absDepth = max(0.0, absDepth);
+
+			fragColor = vec4(absDepth, absDepth, absDepth, 1.0);			
+		} else			
+			fragColor = vec4(0.0, 0.0, 0.0, 1.0);
+	} else
+		fragColor = vec4(0, 0, 0, 0);
+}

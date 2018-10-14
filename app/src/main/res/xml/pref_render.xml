@@ -1,0 +1,17 @@
+<PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android">
+    <vsense.ar.NumberPickerPreference
+        android:key="rn_nbr_order"
+        android:title="Max. SH order "
+        android:summary="Maximum order for the SH coefficients"
+        android:defaultValue="9"
+        min="0"
+        max="9"
+        step="1" />
+
+    <ListPreference
+        android:key="render_object"
+        android:title="Virtual object"
+        android:entries="@array/render_object_array"
+        android:entryValues="@array/render_object_values_array"
+        android:defaultValue="bunny"/>
+</PreferenceScreen>

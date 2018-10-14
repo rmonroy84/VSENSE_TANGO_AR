@@ -1,0 +1,80 @@
+#version @VERSION_GLSL@
+
+uniform mat3 corrMtx;
+uniform bool withinTrustedSphere;
+
+layout(binding=0, rgba32f) uniform readonly mediump image2D samplesRef;  // RGB-D
+layout(binding=1, rgba32f) uniform readonly mediump image2D samplesCur;  // RGB-D
+layout(binding=2, rgba32f) uniform readonly mediump image2D samplesData; // emPosX, emPosY, devDist, cosPlane
+
+layout(binding=3, rgba32f) uniform writeonly mediump image2D envMap; // RGB-D (Sign of depth will be used as flag)
+
+const float MaxTrustedCos = 0.999;
+const float MaxAllowedDistance = 0.10; // 10cm
+
+layout (local_size_x = 8, local_size_y = 8) in;
+
+void main() {
+	ivec2 samplesSize = imageSize(samplesRef);
+	
+	ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+	
+	if(pos.x >= samplesSize.x)
+		return;
+	if(pos.y >= samplesSize.y)
+		return;
+	
+	vec4 sampleCur = imageLoad(samplesCur, pos);
+	
+	if(sampleCur.a == 0.0) // Nothing to add
+		return;
+	
+	sampleCur.rgb = vec3(corrMtx*sampleCur.rgb);
+
+	if (sampleCur.r < 0.0)
+		return;
+	if (sampleCur.g < 0.0)
+		return;
+	if (sampleCur.b < 0.0)
+		return;
+		
+	vec4 sampleRef = imageLoad(samplesRef, pos);
+		
+	float refDepth = abs(sampleRef.a);
+	float curDepth = abs(sampleCur.a);
+	
+	vec4 sampleData = imageLoad(samplesData, pos);
+
+	bool isValid = (sampleRef.a <= 0.0); // No reference data (anything is better than that)
+
+	if(!isValid) {
+		isValid = (refDepth > curDepth); // Reference is farther away than current
+
+		if(!isValid) {
+			isValid = withinTrustedSphere; // Device is close to the virtual object's position
+
+			if(!isValid) {
+				// Device is close to the point's ray
+				isValid = (sampleData.z < MaxAllowedDistance); 
+			}
+		}
+	}
+
+	if(!isValid)
+		return;
+
+	vec4 newData;
+	newData.rgb = sampleCur.rgb;
+	
+	if(refDepth == 0.0)
+		newData.a = curDepth;
+	else
+		newData.a = (curDepth + refDepth)/2.0;
+	
+	if(sampleCur.a < 0.0) // If we're not sure about the current depth, leave it unreliable
+		newData.a = -newData.a;
+	
+	ivec2 envMapPos = ivec2(int(sampleData.x), int(sampleData.y));
+	
+	imageStore(envMap, envMapPos, newData);
+}

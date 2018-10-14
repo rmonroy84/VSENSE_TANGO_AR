@@ -1,0 +1,70 @@
+#version @VERSION_GLSL@
+
+@PRECISION@
+
+in vec2 vUV;
+in vec3 vDiffLight;
+
+uniform vec4 materialParams;
+uniform sampler2D diffTexture;
+
+uniform vec3 baseColor;
+
+out vec4 fragColor;
+
+uniform mat3 colorCorrectionMtx;
+uniform bool colorCorrection;
+
+const float Gamma = 2.4;
+const float InvGamma = 1.0/Gamma;
+
+vec3 sRGB2linRGB(in vec3 sRGB) {
+	vec3 rgb = sRGB;
+
+	for (int i = 0; i < 3; i++) {
+		if (rgb[i] <= 0.04045)
+			rgb[i] /= 12.92;
+		else
+			rgb[i] = pow((rgb[i] + 0.055) / 1.055, Gamma);
+	}
+
+	return rgb;
+}
+
+vec3 linRGB2sRGB(in vec3 rgb) {
+	vec3 sRGB = rgb;
+
+	for (int i = 0; i < 3; i++) {
+		if (sRGB[i] <= 0.0031308)
+			sRGB[i] *= 12.92;
+		else
+			sRGB[i] = 1.055*pow(sRGB[i], InvGamma) - 0.055;
+	}
+
+	return sRGB;
+}
+
+
+void main() {
+	float materialAmbient = materialParams.x;
+	float materialDiffuse = materialParams.y;
+
+	vec4 objectColor = vec4(baseColor, 1.0);
+	if((baseColor.r == 0.0) && (baseColor.g == 0.0) && (baseColor.b == 0.0)) {
+		objectColor = texture(diffTexture, vec2(vUV.x, 1.0 - vUV.y));
+		objectColor.rgb = objectColor.rgb * (materialAmbient + materialDiffuse*vDiffLight);
+	}
+	else 
+		objectColor.rgb = objectColor.rgb + 0.6*(materialAmbient + materialDiffuse*vDiffLight);
+	
+	if(colorCorrection) {
+		vec3 curColor = sRGB2linRGB(objectColor.rgb);
+	
+		curColor = colorCorrectionMtx*curColor; // Color-corrected		
+		curColor = linRGB2sRGB(curColor); // Back to sRGB
+
+		objectColor.rgb = curColor;
+	}
+	
+	fragColor = objectColor;	
+}

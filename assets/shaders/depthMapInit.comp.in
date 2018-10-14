@@ -1,0 +1,106 @@
+#version @VERSION_GLSL@
+
+uniform vec2 f_pc;
+uniform vec2 c_pc;
+uniform float coeff_pc[5];
+
+uniform vec2 f_im;
+uniform vec2 c_im;
+uniform mat4 pose_im;
+uniform float coeff_im[5];
+
+uniform float minConfidence;
+uniform int nbrPoints;
+
+layout(binding=0, rgba32f) uniform readonly mediump image2D pointCloud; // XYZ, Confidence
+layout(binding=1, rgba32f) uniform readonly mediump image2D colorImage; // RGB, Alpha not used
+
+layout(binding=2, rgba32f) uniform writeonly mediump image2D depthMap;  // RGB-D
+layout(binding=3, rgba32f) uniform writeonly mediump image2D pointsMap; // XYZ, Flags
+
+const float KnownPoint = 1.0;
+
+layout (local_size_x = 8, local_size_y = 8) in;
+
+vec2 undistort(in vec2 pt, in float coeff[5]) {
+	float x2 = pt.x*pt.x;
+	float y2 = pt.y*pt.y;
+	float r2 = x2 + y2;	
+
+	vec2 uv;
+	
+	if (coeff[4] != 0.0) { // Brown's 5-Polynomial
+		float xy2 = 2.0 * pt.x*pt.y;
+		float kr = 1.0 + ((coeff[4]*r2 + coeff[1])*r2 + coeff[0])*r2;
+
+		uv.x = pt.x*kr + coeff[2]*xy2 + coeff[3]*(r2 + 2.0 * x2);
+		uv.y = pt.y*kr + coeff[2]*(r2 + 2.0 * y2) + coeff[3]*xy2;
+	} else { // Brown's 3 Polynomial
+		float kr = 1.0 + ((coeff[2]*r2 + coeff[1])*r2 + coeff[0])*r2;
+
+		uv.x = pt.x*kr;
+		uv.y = pt.y*kr;
+	}
+	
+	return uv;
+}
+
+vec2 project(in vec2 pt, in vec2 f, in vec2 c) {
+	vec2 uv;
+	
+	uv.x = pt.x*f[0] + c[0];
+	uv.y = pt.y*f[1] + c[1];
+
+	return uv;
+}
+
+vec2 undistortAndProject(in vec3 pt, in float coeff[5], in vec2 f, in vec2 c) {
+	vec2 uv = undistort(vec2(pt.x / pt.z, pt.y / pt.z), coeff);
+
+	return project(uv, f, c);
+}
+
+void main() {
+	ivec2 depthMapSize = imageSize(depthMap);
+	
+	ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+
+	if(pos.x >= depthMapSize.x)
+		return;
+	if(pos.y >= depthMapSize.y)
+		return;
+		
+	ivec2 colorImageSize = imageSize(colorImage);
+	ivec2 pointCloudSize = imageSize(pointCloud);
+	
+	int curPointNbr = pos.y*pointCloudSize.x + pos.y;
+	if(curPointNbr >= nbrPoints)
+		return;
+
+	vec4 pt = imageLoad(pointCloud, pos);
+
+	if(pt.w < minConfidence)
+		return;
+
+	vec3 ptTrans = vec3(pose_im*vec4(pt.xyz, 1.0));
+	ivec2 ptColor = ivec2(undistortAndProject(ptTrans, coeff_im, f_im, c_im) + 0.5);
+
+	if (ptColor.x < 0)
+		return;
+	if (ptColor.x >= colorImageSize.x)
+		return;
+	if (ptColor.y < 0)
+		return;
+	if (ptColor.y >= colorImageSize.y)
+		return;
+
+	vec3 color = imageLoad(colorImage, ptColor).rgb;
+
+	ivec2 ptDepth = ivec2(undistortAndProject(pt.xyz, coeff_pc, f_pc, c_pc) + 0.5);
+	ptDepth = depthMapSize - ptDepth - 1;
+	ptDepth.x = clamp(ptDepth.x, 0, depthMapSize.x - 1);
+	ptDepth.y = clamp(ptDepth.y, 0, depthMapSize.y - 1);
+	
+	imageStore(depthMap, ptDepth, vec4(color, pt.z));
+	imageStore(pointsMap, ptDepth, vec4(pt.xyz, KnownPoint));  // The alpha channel indicates the pixel is known
+}

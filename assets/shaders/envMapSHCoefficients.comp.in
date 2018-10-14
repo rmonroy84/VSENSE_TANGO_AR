@@ -1,0 +1,490 @@
+#version @VERSION_GLSL@
+
+uniform ivec2 numWG;
+uniform int maxOrder;
+
+layout(binding=0, rgba32f) uniform readonly mediump image2D envMap;        // RGB-D (Sign of depth will be used as flag)
+layout(binding=1, rgba32f) uniform readonly mediump image2D randomSamples; // Theta1, Phi1, Theta2, Phi2
+
+// OpenGL ES 3.1 doesn't allow texture with the rgba32f qualifier to be used for both read & write
+layout(binding=2, r32f) uniform mediump image2D coeffRAcc;
+layout(binding=3, r32f) uniform mediump image2D coeffGAcc;
+layout(binding=4, r32f) uniform mediump image2D coeffBAcc;
+layout(binding=5, r32f) uniform mediump image2D coeffAAcc;
+
+layout(binding=6, rgba32f) uniform writeonly mediump image2D coeffFinal;
+
+// Maximum shared memory size is 32kB, we could in theory have 5x5 though
+#define LOCAL_SIZE 4
+
+const float M_PI = 3.14159265358979323846;
+const float M_2PI = M_PI * 2.0;
+const float M_4PI = M_PI * 4.0;
+
+const float Gamma = 2.4;
+const float InvGamma = 1.0/Gamma;
+
+const int HardCodedOrderLimit = 4;
+const int CacheSize = 13;
+
+const int SharedSize = LOCAL_SIZE*LOCAL_SIZE;
+
+layout (local_size_x = LOCAL_SIZE, local_size_y = LOCAL_SIZE) in;
+
+const int MaxCoefficients = 100;
+shared vec4 sharedCoeff[SharedSize][MaxCoefficients];
+
+float hardcodedSH00(in vec3 d) {
+	// 0.5 * sqrt(1/pi)
+	return 0.282095;
+}
+
+float hardcodedSH1n1(in vec3 d) {
+	// -sqrt(3/(4pi)) * y
+	return -0.488603 * d.y;
+}
+
+float hardcodedSH10(in vec3 d) {
+	// sqrt(3/(4pi)) * z
+	return 0.488603 * d.z;
+}
+
+float hardcodedSH1p1(in vec3 d) {
+	// -sqrt(3/(4pi)) * x
+	return -0.488603 * d.x;
+}
+
+float hardcodedSH2n2(in vec3 d) {
+	// 0.5 * sqrt(15/pi) * x * y
+	return 1.092548 * d.x * d.y;
+}
+
+float hardcodedSH2n1(in vec3 d) {
+	// -0.5 * sqrt(15/pi) * y * z
+	return -1.092548 * d.y * d.z;
+}
+
+float hardcodedSH20(in vec3 d) {
+	// 0.25 * sqrt(5/pi) * (-x^2-y^2+2z^2)
+	return 0.315392 * (-d.x * d.x - d.y * d.y + 2.0 * d.z * d.z);
+}
+
+float hardcodedSH2p1(in vec3 d) {
+	// -0.5 * sqrt(15/pi) * x * z
+	return -1.092548 * d.x * d.z;
+}
+
+float hardcodedSH2p2(in vec3 d) {
+	// 0.25 * sqrt(15/pi) * (x^2 - y^2)
+	return 0.546274 * (d.x * d.x - d.y * d.y);
+}
+
+float hardcodedSH3n3(in vec3 d) {
+	// -0.25 * sqrt(35/(2pi)) * y * (3x^2 - y^2)
+	return -0.590044 * d.y * (3.0 * d.x * d.x - d.y * d.y);
+}
+
+float hardcodedSH3n2(in vec3 d) {
+	// 0.5 * sqrt(105/pi) * x * y * z
+	return 2.890611 * d.x * d.y * d.z;
+}
+
+float hardcodedSH3n1(in vec3 d) {
+	// -0.25 * sqrt(21/(2pi)) * y * (4z^2-x^2-y^2)
+	return -0.457046 * d.y * (4.0 * d.z * d.z - d.x * d.x - d.y * d.y);
+}
+
+float hardcodedSH30(in vec3 d) {
+	// 0.25 * sqrt(7/pi) * z * (2z^2 - 3x^2 - 3y^2)
+	return 0.373176 * d.z * (2.0 * d.z * d.z - 3.0 * d.x * d.x - 3.0 * d.y * d.y);
+}
+
+float hardcodedSH3p1(in vec3 d) {
+	// -0.25 * sqrt(21/(2pi)) * x * (4z^2-x^2-y^2)
+	return -0.457046 * d.x * (4.0 * d.z * d.z - d.x * d.x - d.y * d.y);
+}
+
+float hardcodedSH3p2(in vec3 d) {
+	// 0.25 * sqrt(105/pi) * z * (x^2 - y^2)
+	return 1.445306 * d.z * (d.x * d.x - d.y * d.y);
+}
+
+float hardcodedSH3p3(in vec3 d) {
+	// -0.25 * sqrt(35/(2pi)) * x * (x^2-3y^2)
+	return -0.590044 * d.x * (d.x * d.x - 3.0 * d.y * d.y);
+}
+
+float hardcodedSH4n4(in vec3 d) {
+	// 0.75 * sqrt(35/pi) * x * y * (x^2-y^2)
+	return 2.503343 * d.x * d.y * (d.x * d.x - d.y * d.y);
+}
+
+float hardcodedSH4n3(in vec3 d) {
+	// -0.75 * sqrt(35/(2pi)) * y * z * (3x^2-y^2)
+	return -1.770131 * d.y * d.z * (3.0 * d.x * d.x - d.y * d.y);
+}
+
+float hardcodedSH4n2(in vec3 d) {
+	// 0.75 * sqrt(5/pi) * x * y * (7z^2-1)
+	return 0.946175 * d.x * d.y * (7.0 * d.z * d.z - 1.0);
+}
+
+float hardcodedSH4n1(in vec3 d) {
+	// -0.75 * sqrt(5/(2pi)) * y * z * (7z^2-3)
+	return -0.669047 * d.y * d.z * (7.0 * d.z * d.z - 3.0);
+}
+
+float hardcodedSH40(in vec3 d) {
+	// 3/16 * sqrt(1/pi) * (35z^4-30z^2+3)
+	float y2 = d.z * d.z;
+	return 0.105786 * (35.0 * y2 * y2 - 30.0 * y2 + 3.0);
+}
+
+float hardcodedSH4p1(in vec3 d) {
+	// -0.75 * sqrt(5/(2pi)) * x * z * (7z^2-3)
+	return -0.669047 * d.x * d.z * (7.0 * d.z * d.z - 3.0);
+}
+
+float hardcodedSH4p2(in vec3 d) {
+	// 3/8 * sqrt(5/pi) * (x^2 - y^2) * (7z^2 - 1)
+	return 0.473087 * (d.x * d.x - d.y * d.y) * (7.0 * d.z * d.z - 1.0);
+}
+
+float hardcodedSH4p3(in vec3 d) {
+	// -0.75 * sqrt(35/(2pi)) * x * z * (x^2 - 3y^2)
+	return -1.770131 * d.x * d.z * (d.x * d.x - 3.0 * d.y * d.y);
+}
+
+float hardcodedSH4p4(in vec3 d) {
+	// 3/16*sqrt(35/pi) * (x^2 * (x^2 - 3y^2) - y^2 * (3x^2 - y^2))
+	float x2 = d.x * d.x;
+	float y2 = d.y * d.y;
+	return 0.625836 * (x2 * (x2 - 3.0 * y2) - y2 * (3.0 * x2 - y2));
+}
+
+float doubleFactorial(in int x) {
+	const float dblFactorialCache[CacheSize] = float[CacheSize](1.0, 1.0, 2.0, 3.0, 8.0, 15.0, 48.0, 105.0, 384.0, 945.0, 3840.0, 10395.0, 46080.0);
+
+	if (x < CacheSize) {
+		return dblFactorialCache[x];
+	} else {
+		float s = 1.0;
+		float n = float(x);
+		while (n > 1.0) {
+			s *= n;
+			n -= 2.0;
+		}
+		
+		return s;
+	}
+}
+
+float evalLegendrePolynomial(in int l, in int m, in float x) {
+	float pmm = 1.0;
+	if (m > 0) {
+		float sign = (m % 2 == 0 ? 1.0 : -1.0);
+		pmm = sign * doubleFactorial(2 * m - 1) * pow(1.0 - x * x, float(m) / 2.0);
+	}
+
+	if (l == m)
+		return pmm;
+
+	float pmm1 = x * (2.0 * float(m) + 1.0) * pmm;
+	if (l == m + 1)
+		return pmm1;
+
+	for (int n = m + 2; n <= l; n++) {
+		float pmn = (x * (2.0 * float(n) - 1.0) * pmm1 - (float(n + m) - 1.0) * pmm) / float(n - m);
+		pmm = pmm1;
+		pmm1 = pmn;
+	}
+
+	return pmm1;
+}
+
+float factorial(in int x) {
+	const float factorialCache[CacheSize] = float[CacheSize](1.0, 1.0, 2.0, 6.0, 24.0, 120.0, 720.0, 5040.0, 40320.0, 362880.0, 3628800.0, 39916800.0, 479001600.0);
+
+	if (x < CacheSize) {
+		return factorialCache[x];
+	} else {
+		float s = 1.0;
+		for (int n = 2; n <= x; n++)
+			s *= float(n);
+
+		return s;
+	}
+}
+
+float evalSHSlow(in int l, in int m, in float phi, in float theta) {
+	float kml = sqrt((2.0 * float(l) + 1.0) * factorial(l - abs(m)) / (4.0 * M_PI * factorial(l + abs(m))));
+	if (m > 0) 
+		return sqrt(2.0) * kml * cos(float(m) * phi) * evalLegendrePolynomial(l, m, cos(theta));
+	else if (m < 0) 
+		return sqrt(2.0) * kml * sin(-float(m) * phi) * evalLegendrePolynomial(l, -m, cos(theta));
+	else
+		return kml * evalLegendrePolynomial(l, 0, cos(theta));
+}
+
+float evalSH(in int l, in int m, in vec3 dir) {
+	switch (l) {
+		case 0:
+			return hardcodedSH00(dir);
+		case 1:
+			switch (m) {
+				case -1:
+					return hardcodedSH1n1(dir);
+				case 0:
+					return hardcodedSH10(dir);
+				case 1:
+					return hardcodedSH1p1(dir);
+			}
+		case 2:
+			switch (m) {
+				case -2:
+					return hardcodedSH2n2(dir);
+				case -1:
+					return hardcodedSH2n1(dir);
+				case 0:
+					return hardcodedSH20(dir);
+				case 1:
+					return hardcodedSH2p1(dir);
+				case 2:
+					return hardcodedSH2p2(dir);
+			}
+		case 3:
+			switch (m) {
+				case -3:
+					return hardcodedSH3n3(dir);
+				case -2:
+					return hardcodedSH3n2(dir);
+				case -1:
+					return hardcodedSH3n1(dir);
+				case 0:
+					return hardcodedSH30(dir);
+				case 1:
+					return hardcodedSH3p1(dir);
+				case 2:
+					return hardcodedSH3p2(dir);
+				case 3:
+					return hardcodedSH3p3(dir);
+			}
+		case 4:
+			switch (m) {
+				case -4:
+					return hardcodedSH4n4(dir);
+				case -3:
+					return hardcodedSH4n3(dir);
+				case -2:
+					return hardcodedSH4n2(dir);
+				case -1:
+					return hardcodedSH4n1(dir);
+				case 0:
+					return hardcodedSH40(dir);
+				case 1:
+					return hardcodedSH4p1(dir);
+				case 2:
+					return hardcodedSH4p2(dir);
+				case 3:
+					return hardcodedSH4p3(dir);
+				case 4:
+					return hardcodedSH4p4(dir);
+			}
+	}
+
+	return 0.0;
+}
+
+vec3 toVector(in float phi, in float theta) {
+	float r = sin(theta);
+
+	vec3 v = vec3(r*cos(phi), r*sin(phi), cos(theta));
+	
+	return v;
+}
+
+float evalSH(in int l, in int m, in float phi, in float theta) {
+	if (l <= HardCodedOrderLimit)
+		return evalSH(l, m, toVector(phi, theta));
+	else
+		return evalSHSlow(l, m, phi, theta);	
+}
+
+ivec2 toImageCoord(in vec2 imageSize, in vec2 sphCoord) {
+	ivec2 coord;
+	coord.x = int(min(max(sphCoord.y*imageSize.x / M_2PI - 0.5, 0.0), imageSize.x - 1.0));
+	coord.y = int(min(max(sphCoord.x*imageSize.y / M_PI - 0.5, 0.0), imageSize.y - 1.0));
+	
+	return coord;
+}
+
+vec3 linRGB2sRGB(in vec3 rgb) {
+	vec3 sRGB = rgb;
+
+	for (int i = 0; i < 3; i++) {
+		if (sRGB[i] <= 0.0031308)
+			sRGB[i] *= 12.92;
+		else
+			sRGB[i] = 1.055*pow(sRGB[i], InvGamma) - 0.055;
+
+		sRGB[i] = min(1.0, sRGB[i]);
+	}
+
+	return sRGB;
+}
+
+int getIndex(in int l, in int m) {
+	return l * (l + 1) + m;
+}
+
+const ivec2 searchDir[8] = ivec2[8](ivec2(-1, 0), ivec2(1, 0), ivec2(0, -1), ivec2(0, 1), ivec2(-1, -1), ivec2(1, -1), ivec2(1, 1), ivec2(-1, 1));
+
+vec4 findClosestSample(in ivec2 pos, in ivec2 imgSize) {
+	vec4 foundColor = vec4(0.0, 0.0, 0.0, 0.0);
+	for(int dist = 1; dist < 50; dist++) {
+		for(int i = 0; i < 4; i++) {
+			ivec2 searchPos = pos + searchDir[i]*dist;
+
+			if(searchPos.y < 0)
+				continue;
+			if(searchPos.y > imgSize.y)
+				continue;
+
+			if(searchPos.x < 0)
+				searchPos.x = searchPos.x + imgSize.x;
+			if(searchPos.x >= imgSize.x)
+				searchPos.x = searchPos.x - imgSize.x;			
+
+			foundColor = imageLoad(envMap, searchPos);
+
+			if(foundColor.a != 0.0)
+				return foundColor;
+		}
+	}
+
+	return foundColor;
+}
+
+void accumulateCoefficients(in int sharedIdx, in vec2 envMapSize, vec2 sphCoord) {
+	ivec2 posSample = toImageCoord(envMapSize, sphCoord.xy);	
+	vec4 sampleEnvMap = imageLoad(envMap, posSample);
+
+	if(sampleEnvMap.a == 0.0) // Look for the closest known color
+		sampleEnvMap = findClosestSample(posSample, ivec2(envMapSize));
+
+	if(sampleEnvMap.a == 0.0) // No color found
+		return;
+	
+	vec4 sampleColor;
+	sampleColor.rgb = linRGB2sRGB(sampleEnvMap.rgb);
+
+	float lightVal = 0.299*sampleColor.r + 0.587*sampleColor.g + 0.114*sampleColor.b;
+	sampleColor.a = (lightVal > 0.8 ? 1.0 : 0.0);
+	
+	for (int l = 0; l <= maxOrder; l++) {
+		for (int m = -l; m <= l; m++) {
+			int i = getIndex(l, m);
+			float sh = evalSH(l, m, sphCoord.y, sphCoord.x);
+			sharedCoeff[sharedIdx][i] += sh * sampleColor;
+		}
+	}	
+}
+
+void main() {
+	ivec2 localInv = ivec2(gl_LocalInvocationID.xy);
+	int numCoeffs = (maxOrder + 1)*(maxOrder + 1);
+	
+	if(int(gl_NumWorkGroups.x) == 1) { // Final accumulation
+		if(localInv.x != 0)
+			return;
+		if(localInv.y != 0)
+			return;
+		
+		vec2 samplesSize = vec2(imageSize(envMap));
+		
+		vec4 fCoeff[MaxCoefficients];
+		for(int i = 0; i < numCoeffs; i++)
+			fCoeff[i] = vec4(0.0, 0.0, 0.0, 0.0);
+
+		for(int i = 0; i < numWG.x; i++) {		
+			for(int j = 0; j < numWG.y; j++) {
+				ivec2 curPos = ivec2(i*MaxCoefficients, j);		
+
+				for(int k = 0; k < numCoeffs; k++) {
+					ivec2 curPosCoef = curPos + ivec2(k, 0);
+					fCoeff[k].r += imageLoad(coeffRAcc, curPosCoef).r;
+					fCoeff[k].g += imageLoad(coeffGAcc, curPosCoef).r;
+					fCoeff[k].b += imageLoad(coeffBAcc, curPosCoef).r;
+					fCoeff[k].a += imageLoad(coeffAAcc, curPosCoef).r;
+				}			
+			}
+		}
+
+		float factor = float(numWG.x*numWG.y);
+		for(int i = 0; i < numCoeffs; i++) {
+			fCoeff[i] /= factor;
+			imageStore(coeffFinal, ivec2(0, i), fCoeff[i]);
+		}		
+	
+		return;
+	}
+	
+	ivec2 pos = ivec2(gl_GlobalInvocationID.xy);	
+	ivec2 samplesSize = imageSize(randomSamples);
+	vec2 envMapSize = vec2(imageSize(envMap));
+
+	int sharedIdx = localInv.y*LOCAL_SIZE + localInv.x;	
+	
+	for(int i = 0; i < numCoeffs; i++)
+		sharedCoeff[sharedIdx][i] = vec4(0.0, 0.0, 0.0, 0.0);
+
+	for(int offsetY = 0; offsetY < 4; offsetY++) {
+		int y = pos.y*4 + offsetY;		
+		if(y >= samplesSize.y)
+			break;
+
+		for(int offsetX = 0; offsetX < 2; offsetX++) {
+			int x = pos.x*2 + offsetX;
+			if(x >= samplesSize.x)
+				break;
+
+			ivec2 posLocal = ivec2(x, y);			
+			
+			vec4 randSample = imageLoad(randomSamples, posLocal);			
+			
+			accumulateCoefficients(sharedIdx, envMapSize, randSample.xy);
+			accumulateCoefficients(sharedIdx, envMapSize, randSample.zw);			
+		}
+	}
+	
+	float factor = M_4PI/16.0;
+	for(int i = 0; i < numCoeffs; i++)
+		sharedCoeff[sharedIdx][i] *= factor;
+	
+	// Block until all shared memory slots are filled	
+	memoryBarrierShared();
+	barrier();
+	
+	if(localInv.x != 0)
+		return;
+	if(localInv.y != 0)
+		return;
+	 	
+	for(int i = 0; i < numCoeffs; i++) {
+		for(int j = 1; j < SharedSize; j++)
+			sharedCoeff[0][i] += sharedCoeff[j][i];	
+
+		sharedCoeff[0][i] /= float(SharedSize);
+	}	
+	
+	ivec2 posMat = ivec2(gl_WorkGroupID.xy);
+	posMat.x *= MaxCoefficients;	
+	
+	for(int i = 0; i < numCoeffs; i++) {
+		ivec2 curPosMat = posMat + ivec2(i, 0);
+		imageStore(coeffRAcc, curPosMat, vec4(sharedCoeff[0][i].r, 1.0, 1.0, 1.0));
+		imageStore(coeffGAcc, curPosMat, vec4(sharedCoeff[0][i].g, 1.0, 1.0, 1.0));
+		imageStore(coeffBAcc, curPosMat, vec4(sharedCoeff[0][i].b, 1.0, 1.0, 1.0));
+		imageStore(coeffAAcc, curPosMat, vec4(sharedCoeff[0][i].a, 1.0, 1.0, 1.0));
+	}
+}

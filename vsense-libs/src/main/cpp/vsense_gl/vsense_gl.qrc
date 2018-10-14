@@ -1,0 +1,16 @@
+<RCC>
+	<qresource prefix="/">
+		<file>resources/shaders/gizmo.frag</file>
+		<file>resources/shaders/gizmo.vert</file>       
+		<file>resources/shaders/mesh.frag</file>
+		<file>resources/shaders/mesh.vert</file>   
+		<file>resources/shaders/pointCloud.frag</file>
+		<file>resources/shaders/pointCloud.vert</file>     
+		<file>resources/shaders/shmeshDot.frag</file>
+		<file>resources/shaders/shmeshDot.vert</file>   
+		<file>resources/shaders/shmeshPlaneDot.frag</file>
+		<file>resources/shaders/shmeshPlaneDot.vert</file>   
+		<file>resources/shaders/image.frag</file>
+		<file>resources/shaders/image.vert</file>       
+	</qresource>
+</RCC>

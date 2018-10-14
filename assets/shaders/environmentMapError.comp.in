@@ -1,0 +1,106 @@
+#version @VERSION_GLSL@
+
+uniform mat3 corrMtx;
+uniform ivec2 numWG;
+
+layout(binding=0, rgba32f) uniform readonly mediump image2D samplesRef;  // RGB-D (Reliability as depth's sign)
+layout(binding=1, rgba32f) uniform readonly mediump image2D samplesCur;  // RGB-D (Reliability as depth's sign)
+
+layout(binding=2, r32f) uniform mediump image2D errorAcc;
+layout(binding=3, r32f) uniform mediump image2D countAcc;
+layout(binding=4, r32f) uniform writeonly mediump image2D finalError;
+
+#define LOCAL_SIZE 8
+
+const int SharedSize = LOCAL_SIZE*LOCAL_SIZE;
+const float MaxDepthDiff = 0.01;
+
+layout (local_size_x = LOCAL_SIZE, local_size_y = LOCAL_SIZE) in;
+
+shared float sharedError[SharedSize];
+shared int sharedCount[SharedSize];
+
+void main() {
+	ivec2 localInv = ivec2(gl_LocalInvocationID.xy);
+	
+	if(int(gl_NumWorkGroups.x) == 1) { // Final accumulation
+		if(localInv.x != 0)
+			return;
+		if(localInv.y != 0)
+			return;
+		
+		float error = 0.0;
+		float fCount = 0.0;		
+		for(int i = 0; i < numWG.x; i++) {		
+			for(int j = 0; j < numWG.y; j++) {
+				ivec2 curPos = ivec2(i, j);			
+				error += imageLoad(errorAcc, curPos).r;
+				fCount += imageLoad(countAcc, curPos).r;
+			}
+		}		
+			
+		error /= fCount;
+		imageStore(finalError, ivec2(0, 0), vec4(error, 1.0, 1.0, 1.0));
+		
+		return;
+	}
+	
+	ivec2 pos = ivec2(gl_GlobalInvocationID.xy);	
+	ivec2 samplesSize = imageSize(samplesRef);	
+
+	int sharedIdx = localInv.y*LOCAL_SIZE + localInv.x;
+	
+	float error = 0.0;	
+	int count = 0;
+	for(int offsetY = 0; offsetY < 4; offsetY++) {
+		int y = pos.y*4 + offsetY;		
+		if(y >= samplesSize.y)
+			break;
+
+		for(int offsetX = 0; offsetX < 4; offsetX++) {
+			int x = pos.x*4 + offsetX;
+			if(x >= samplesSize.x)
+				break;
+
+			ivec2 posLocal = ivec2(x, y);			
+			
+			vec4 sampleRef = imageLoad(samplesRef, posLocal);			
+			if(sampleRef.a <= 0.0) // No available reliable reference data
+				continue;
+
+			vec4 sampleCur = imageLoad(samplesCur, posLocal);			
+			if(sampleCur.a <= 0.0) // No available reliable current data
+				continue;
+				
+			if (abs(abs(sampleRef.a) - abs(sampleCur.a)) >= MaxDepthDiff) // If the difference with the current and current depth is larger than allowed
+				continue;		
+			
+			vec3 dif = sampleRef.rgb - corrMtx*sampleCur.rgb;
+			error += dot(dif, dif);
+			count++;
+		}
+	}
+	
+	sharedError[sharedIdx] = error;
+	sharedCount[sharedIdx] = count;
+	
+	// Block until all shared memory slots are filled	
+	memoryBarrierShared();
+	barrier();
+	
+	if(localInv.x != 0)
+		return;
+	if(localInv.y != 0)
+		return;
+	 
+	error = 0.0;
+	count = 0;
+	for(int i = 0; i < SharedSize; i++) {
+		error += sharedError[i];
+		count += sharedCount[i];
+	}
+	
+	ivec2 posMat = ivec2(gl_WorkGroupID.xy);
+	imageStore(errorAcc, posMat, vec4(error, 1.0, 1.0, 1.0));
+	imageStore(countAcc, posMat, vec4(float(count), 1.0, 1.0, 1.0));	
+}

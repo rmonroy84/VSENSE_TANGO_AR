@@ -1,0 +1,16 @@
+PROJECT(vsense_sh)
+
+IF(MSVC)
+	FILE(GLOB INC_FILES ${VSENSE_INCLUDE_DIR}/vsense/sh/*.h)    
+ENDIF()
+
+FILE(GLOB SRC_FILES vsense/sh/*.cpp)
+
+ADD_LIBRARY(${PROJECT_NAME} STATIC ${SRC_FILES} ${INC_FILES})
+
+IF(ANDROID)
+	SET_TARGET_PROPERTIES(${PROJECT_NAME}
+                      PROPERTIES
+                      ARCHIVE_OUTPUT_DIRECTORY
+                      "${VSENSE_INCLUDE_DIR}/../lib/sh/${ANDROID_ABI}")
+ENDIF()

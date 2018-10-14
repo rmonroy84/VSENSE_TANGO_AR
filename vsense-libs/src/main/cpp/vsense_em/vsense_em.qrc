@@ -1,0 +1,15 @@
+<RCC>
+	<qresource prefix="/">
+		<file>resources/shaders/colorImage.comp</file>
+		<file>resources/shaders/depthMapInit.comp</file>
+		<file>resources/shaders/depthMapMarkReliable.comp</file>
+		<file>resources/shaders/depthMapFillHoles.comp</file>
+		<file>resources/shaders/environmentMapSample.comp</file>
+		<file>resources/shaders/environmentMapCorrect.comp</file>
+		<file>resources/shaders/environmentMapError.comp</file>
+		<file>resources/shaders/environmentMapRelocate.comp</file>
+		<file>resources/shaders/environmentMapProject.comp</file>
+		<file>resources/shaders/envMapSHCoefficients.comp</file>
+		<file>resources/shaders/envMapSimulate.comp</file>
+	</qresource>
+</RCC>

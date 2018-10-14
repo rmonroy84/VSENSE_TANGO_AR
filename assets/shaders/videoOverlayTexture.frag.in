@@ -1,0 +1,11 @@
+#version @VERSION_GLSL@
+
+precision highp float;
+precision highp int;
+uniform sampler2D texture;
+
+in vec2 f_textureCoords;
+
+void main() {
+	gl_FragColor = texture2D(texture, f_textureCoords);
+}

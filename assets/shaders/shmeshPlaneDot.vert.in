@@ -1,0 +1,56 @@
+#version @VERSION_GLSL@
+
+@PRECISION@
+
+in vec4 vertex;
+in vec3 normal;
+
+uniform mat4 mvp;
+
+uniform int coeffNbr;
+uniform int renderCoeffNbr;
+
+uniform float coeffsPlane[100];
+
+uniform float shFactor;
+uniform float shadowColor;
+
+uniform sampler2D shadowCoeffs;
+uniform sampler2D coeffAmb;
+
+out vec4 vColor;
+
+void main() {
+	ivec2 selfOccSize = textureSize(shadowCoeffs, 0);
+	int vertPerRow = (selfOccSize.x * 4)/coeffNbr;
+	int startRow = gl_VertexID/vertPerRow;
+	int startCol = (gl_VertexID % vertPerRow)*coeffNbr;	
+	
+	vec3 valBlocked = vec3(0.0, 0.0, 0.0);
+	vec3 valUnblocked = vec3(0.0, 0.0, 0.0);
+	for(int i = 0; i < 25; i++) {
+		int curCol = startCol + i;
+		int curChan = curCol % 4; 
+
+		float selfOcc = texelFetch(shadowCoeffs, ivec2(curCol / 4, startRow), 0)[curChan];	
+
+		vec3 ambVal = texelFetch(coeffAmb, ivec2(0, i), 0).rgb;
+		
+		valBlocked = valBlocked + selfOcc*ambVal;
+		valUnblocked = valUnblocked + coeffsPlane[i]*ambVal;	
+	}		
+	
+	vec3 diff = valUnblocked - valBlocked;
+	float softDiff = 0.299*diff.r + 0.587*diff.g + 0.114*diff.b;	
+
+	float shadowAlpha = softDiff;
+	if(shadowAlpha > 1.0)
+		shadowAlpha = 1.0;
+	if(shadowAlpha < 0.0)
+		shadowAlpha = 0.0;				
+
+	shadowAlpha = shadowAlpha*shFactor;
+	vColor = vec4(shadowColor, shadowColor, shadowColor, shadowAlpha);
+	
+	gl_Position = mvp * vertex;		
+}

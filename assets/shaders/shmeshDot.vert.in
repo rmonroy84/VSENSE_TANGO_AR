@@ -1,0 +1,43 @@
+#version @VERSION_GLSL@
+
+@PRECISION@
+
+in vec4 vertex;
+in vec2 uv;
+in vec3 normal;
+
+uniform mat4 mvp;
+
+uniform int coeffNbr;
+
+uniform float shFactor;
+
+uniform vec3 coeffs[100];
+
+uniform sampler2D selfOccCoeff;
+uniform sampler2D coeffAmb;
+
+out vec3 vDiffLight;
+out vec2 vUV;
+
+void main() {
+	ivec2 selfOccSize = textureSize(selfOccCoeff, 0);
+	int vertPerRow = (selfOccSize.x * 4)/coeffNbr;
+	int startRow = gl_VertexID/vertPerRow;
+	int startCol = (gl_VertexID % vertPerRow)*coeffNbr;	
+	
+	// Diffuse component
+	vec3 diffLight = vec3(0.0, 0.0, 0.0);
+	for(int i = 0; i < 25; i++) {
+		int curCol = startCol + i;
+		int curChan = curCol % 4; 
+
+		float selfOcc = texelFetch(selfOccCoeff, ivec2(curCol / 4, startRow), 0)[curChan];			
+		
+		diffLight = diffLight + selfOcc*texelFetch(coeffAmb, ivec2(0, i), 0).rgb;
+	}		
+	vDiffLight = diffLight*shFactor/6.285;
+	vUV = uv;
+	
+	gl_Position = mvp * vertex;		
+}

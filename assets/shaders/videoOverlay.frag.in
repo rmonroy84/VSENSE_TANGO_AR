@@ -1,0 +1,18 @@
+#version @VERSION_GLSL@
+
+#extension GL_OES_EGL_image_external_essl3 : require
+
+precision highp float;
+precision highp int;
+
+uniform samplerExternalOES textureImg;
+
+in vec2 f_textureCoords;
+
+out vec4 fragColor;
+
+void main() {
+	vec3 curColor = texture(textureImg, f_textureCoords).rgb;
+
+	fragColor = vec4(curColor, 1.0);
+}

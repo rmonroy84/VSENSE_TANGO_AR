@@ -1,0 +1,84 @@
+#version @VERSION_GLSL@
+
+uniform mat4 pose_pc;
+
+uniform vec3 devPos;
+uniform vec3 devOr;
+uniform vec3 devDir;
+
+layout(binding=0, rgba32f) uniform readonly mediump image2D depthMap;   // RGB-D
+layout(binding=1, rgba32f) uniform readonly mediump image2D pointsMap;  // XYZ, Flags
+
+layout(binding=2, rgba32f) uniform readonly mediump image2D envMap; // RGB-D (Sign of depth will be used as flag)
+
+layout(binding=3, rgba32f) uniform coherent writeonly mediump image2D samplesRef;  // RGB-D (Reliability as depth's sign)
+layout(binding=4, rgba32f) uniform coherent writeonly mediump image2D samplesCur;  // RGB-D (Reliability as depth's sign)
+layout(binding=5, rgba32f) uniform coherent writeonly mediump image2D samplesData; // emPosX, emPosY, devDist, cosPlane
+
+const float KnownPoint = 1.0;
+const float ReliableKnownPoint = 3.0;
+
+const float M_PI = 3.14159265358979323846;
+const float M_2PI = M_PI * 2.0;
+
+layout (local_size_x = 8, local_size_y = 8) in;
+
+void main() {
+	ivec2 depthMapSize = imageSize(depthMap);
+	ivec2 envMapSize = imageSize(envMap);
+	
+	ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+	
+	if(pos.x >= depthMapSize.x)
+		return;
+	if(pos.y >= depthMapSize.y)
+		return;
+		
+	vec4 curPtP = imageLoad(pointsMap, pos);
+	
+	if(curPtP.w == 0.0) // Not known
+		return;
+	
+	vec4 curPtD = imageLoad(depthMap, pos);
+	
+	vec3 ptPos = mat3(pose_pc)*curPtP.xyz + devOr;
+	
+	vec4 sampleCur;
+	sampleCur.rgb = curPtD.rgb;
+	sampleCur.a = sqrt(dot(ptPos, ptPos));
+	
+	vec3 ptDir = ptPos/sampleCur.a;
+		
+	// We do this mapping on the EM because SH coefficients have the Z-axis pointing upwards
+	float theta = acos(ptDir.y);
+	float phi = atan(-ptDir.z, ptDir.x);
+
+	if (phi < 0.f)
+		phi += M_2PI;
+
+	ivec2 envPos;
+	envPos.x = int(floor(phi*(float(envMapSize.x) - 1.0) / M_2PI + 0.5));
+	envPos.y = int(floor(theta*(float(envMapSize.y) - 1.0) / M_PI + 0.5));
+
+	vec4 sampleRef = imageLoad(envMap, envPos);
+	
+	float distToClosestPtOnRay = 1000.0;
+	float devProjDist = dot(ptDir, devOr); // Length of the device position projection on the point's ray
+	if((devProjDist > 0.0) && (devProjDist < sampleCur.a)) { // Device projection is closer then the point's depth
+		vec3 devProjPt = devProjDist*ptDir - devOr; // Vector between the device position and the closest point along the point's ray
+		distToClosestPtOnRay = sqrt(dot(devProjPt, devProjPt));
+	}
+	
+	vec4 sampleData;
+	sampleData.x = float(envPos.x);
+	sampleData.y = float(envPos.y);
+	sampleData.z = distToClosestPtOnRay;
+	sampleData.w = dot(ptDir, devDir);
+	
+	if(curPtP.w < ReliableKnownPoint) // label unreliable points with negative depths
+		sampleCur.a = -sampleCur.a;	
+	
+	imageStore(samplesRef, pos, sampleRef);
+	imageStore(samplesCur, pos, sampleCur);
+	imageStore(samplesData, pos, sampleData);	
+}

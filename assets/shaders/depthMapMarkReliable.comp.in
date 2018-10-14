@@ -1,0 +1,89 @@
+#version @VERSION_GLSL@
+
+layout(binding=0, rgba32f) uniform readonly mediump image2D depthMap; // RGB-D
+
+layout(binding=1, rgba32f) uniform readonly mediump image2D pointsMapIn;         // XYZ, Flags
+layout(binding=2, rgba32f) uniform writeonly mediump image2D pointsMapOut;       // XYZ, Flags
+
+const float MinExposure = 0.05;
+const float MaxExposure = 0.95;
+
+const float KnownPoint    = 1.0;
+const float ReliablePoint = 2.0;
+
+const float LimitChiSquare = 14.07;
+
+layout (local_size_x = 8, local_size_y = 8) in;
+
+void main() {
+	ivec2 depthMapSize = imageSize(depthMap);
+
+	ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+
+	if(pos.x <= 0)
+		return;
+	if(pos.x >= (depthMapSize.x - 1))
+		return;
+	if(pos.y <= 0)
+		return;
+	if(pos.y >= (depthMapSize.y - 1))
+		return;
+
+	vec4 pointsData = imageLoad(pointsMapIn, pos);
+	imageStore(pointsMapOut, pos, pointsData);
+
+	if(pointsData.w == 0.0) // Unknown point
+		return;
+
+	vec4 depthData = imageLoad(depthMap, pos);	
+
+	bool lowExp = true;
+	bool highExp = true;
+	for(int i = 0; i < 3; i++) { // Over- and under-exposed points discarded
+		if(depthData[i] > MinExposure)
+			lowExp = false;
+		if(depthData[i] < MaxExposure)
+			highExp = false;
+	}
+
+	if(lowExp)
+		return;
+	if(highExp)
+		return;
+	
+	float sqSumD = 0.0;
+	float sumD = 0.0;
+	bool valid = true;
+	for (int i = -1; i <= 1; i++) {
+		for (int j = -1; j <= 1 ; j++) {
+			if((i == 0) && (j == 0))
+				continue;
+			
+			ivec2 curPos = pos + ivec2(i, j);
+			float flags = imageLoad(pointsMapIn, curPos).w;
+
+			if(flags < 0.0) { // Unknown
+				valid = false;
+				break;
+			}
+
+			float depth = imageLoad(depthMap, curPos).w;
+			sqSumD += depth*depth;
+			sumD += depth;			
+		}
+
+		if(!valid)
+			break;
+	}
+ 
+	if (valid) {
+		float depth = depthData.w;
+		float chiSqValue = (sqSumD - 2.0 * depth*sumD + 8.0 * depth*depth) / depth;
+
+		if (chiSqValue <= LimitChiSquare) {
+			pointsData.w += ReliablePoint;
+			
+			imageStore(pointsMapOut, pos, pointsData);
+		}
+	}		
+}

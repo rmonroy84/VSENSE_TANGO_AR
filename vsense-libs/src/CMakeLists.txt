@@ -1,0 +1,3 @@
+IF(MSVC)
+	ADD_SUBDIRECTORY(main)
+ENDIF()

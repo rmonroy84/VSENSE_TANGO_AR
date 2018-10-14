@@ -1,0 +1,66 @@
+#version @VERSION_GLSL@
+
+uniform vec3 curOrigin;
+uniform vec3 newOrigin;
+
+layout(binding=0, rgba32f) uniform readonly mediump image2D envMapIn;  // RGB-D (Reliability as depth's sign)
+layout(binding=1, rgba32f) uniform writeonly mediump image2D envMapOut;  // RGB-D (Reliability as depth's sign)
+
+const float M_PI = 3.14159265358979323846;
+const float M_2PI = M_PI * 2.0;
+
+layout (local_size_x = 8, local_size_y = 8) in;
+
+vec3 toVector(in float phi, in float theta) {
+	float r = sin(theta);
+	
+	// Since SH coeffs use a coordinate system with Z-axis pointing upwards we do this mapping
+	vec3 v = vec3(r*cos(phi), cos(theta), -r*sin(phi));
+	
+	return v;
+}
+
+vec2 toSphericalCoords(in vec3 dir) {
+	vec2 sphCoords;
+
+	// Since SH coeffs use a coordinate system with Z-axis pointing upwards we do this mapping
+	sphCoords.x = acos(clamp(dir.y, -1.0, 1.0));
+	sphCoords.y = atan(-dir.z, dir.x);
+	
+	return sphCoords;
+}
+
+void main() {
+	ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+	
+	ivec2 envMapSize = imageSize(envMapIn);
+	vec4 envMapData = imageLoad(envMapIn, pos);
+	
+	if(envMapData.w == 0.0)
+		return;
+	
+	float theta = float(pos.y)*M_PI/float(envMapSize.y);
+	float phi = float(pos.x)*M_2PI/float(envMapSize.x);
+	
+	float depth = abs(envMapData.w);
+
+	vec3 curDir = normalize(toVector(phi, theta));
+	vec3 newPos = curDir*depth + curOrigin - newOrigin;
+	
+	float newDepth = sqrt(dot(newPos, newPos));
+	vec2 newSphCoords = toSphericalCoords(normalize(newPos));
+	
+	theta = newSphCoords.x;
+	phi = newSphCoords.y;
+	
+	if (phi < 0.0)
+		phi += M_2PI;	
+		
+	pos.x = int(min(max(phi*float(envMapSize.x - 1)/M_2PI, 0.0), float(envMapSize.x - 1)));
+	pos.y = int(min(max(theta*float(envMapSize.y - 1)/M_PI, 0.0), float(envMapSize.y - 1)));
+	
+	if(envMapData.w < 0.0)
+		depth = -depth;
+	
+	imageStore(envMapOut, pos, vec4(envMapData.rgb, depth));
+}

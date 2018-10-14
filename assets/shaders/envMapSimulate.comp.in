@@ -1,0 +1,52 @@
+#version @VERSION_GLSL@
+
+layout(binding=0, rgba32f) uniform readonly mediump image2D inputMap;  
+layout(binding=1, rgba32f) uniform writeonly mediump image2D outputMap; 
+
+const ivec2 searchDir[8] = ivec2[8](ivec2(-1, 0), ivec2(1, 0), ivec2(0, -1), ivec2(0, 1), ivec2(-1, -1), ivec2(1, -1), ivec2(1, 1), ivec2(-1, 1));
+
+layout (local_size_x = 8, local_size_y = 8) in;
+
+vec4 findClosestSample(in ivec2 pos, in ivec2 imgSize) {
+	vec4 foundColor = vec4(0.0, 0.0, 0.0, 0.0);
+	for(int dist = 1; dist < 50; dist++) {
+		for(int i = 0; i < 4; i++) {
+			ivec2 searchPos = pos + searchDir[i]*dist;
+
+			if(searchPos.y < 0)
+				continue;
+			if(searchPos.y > imgSize.y)
+				continue;
+
+			if(searchPos.x < 0)
+				searchPos.x = searchPos.x + imgSize.x;
+			if(searchPos.x >= imgSize.x)
+				searchPos.x = searchPos.x - imgSize.x;			
+
+			foundColor = imageLoad(inputMap, searchPos);
+
+			if(foundColor.a != 0.0)
+				return foundColor;
+		}
+	}
+
+	return foundColor;
+}
+
+void main() {
+	ivec2 pos = ivec2(gl_GlobalInvocationID.xy);			
+	ivec2 inputSize = imageSize(inputMap);
+
+	if(pos.x >= inputSize.x)
+		return;
+	if(pos.y >= inputSize.y)
+		return;
+
+	vec4 inputColor = imageLoad(inputMap, pos);
+	if(inputColor.a == 0.0)
+		inputColor = findClosestSample(pos, inputSize);
+	if(inputColor.a == 0.0)
+		return;
+	
+	imageStore(outputMap, pos, inputColor);	
+}

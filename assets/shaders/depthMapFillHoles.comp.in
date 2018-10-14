@@ -1,0 +1,177 @@
+#version @VERSION_GLSL@
+
+uniform vec2 f_im;
+uniform vec2 c_im;
+uniform mat4 pose_im;
+uniform float coeff_im[5];
+
+uniform bool fillWithMax;
+
+layout(binding=0, rgba32f) uniform readonly mediump image2D colorImage;        // RGB, Alpha not used
+layout(binding=1, rgba32f) uniform readonly mediump image2D ptMappingMapImage; // XY Mapping -> OpenGL ES 3.1 doesn't support rg32f
+
+layout(binding=2, rgba32f) uniform readonly mediump image2D depthMapIn;    // RGB-D
+layout(binding=3, rgba32f) uniform writeonly mediump image2D depthMapOut;  // RGB-D
+layout(binding=4, rgba32f) uniform readonly mediump image2D pointsMapIn;   // XYZ, Flags
+layout(binding=5, rgba32f) uniform writeonly mediump image2D pointsMapOut; // XYZ, Flags
+
+const float KnownPoint    = 1.0;
+const float ReliablePoint = 2.0;
+
+const float MaxDepth = 2.0;
+
+layout (local_size_x = 8, local_size_y = 8) in;
+
+vec2 undistort(in vec2 pt, in float coeff[5]) {
+	float x2 = pt.x*pt.x;
+	float y2 = pt.y*pt.y;
+	float r2 = x2 + y2;	
+
+	vec2 uv;
+	
+	if (coeff[4] != 0.0) { // Brown's 5-Polynomial
+		float xy2 = 2.0 * pt.x*pt.y;
+		float kr = 1.0 + ((coeff[4]*r2 + coeff[1])*r2 + coeff[0])*r2;
+
+		uv.x = pt.x*kr + coeff[2]*xy2 + coeff[3]*(r2 + 2.0 * x2);
+		uv.y = pt.y*kr + coeff[2]*(r2 + 2.0 * y2) + coeff[3]*xy2;
+	} else { // Brown's 3 Polynomial
+		float kr = 1.0 + ((coeff[2]*r2 + coeff[1])*r2 + coeff[0])*r2;
+
+		uv.x = pt.x*kr;
+		uv.y = pt.y*kr;
+	}
+	
+	return uv;
+}
+
+vec2 project(in vec2 pt, in vec2 f, in vec2 c) {
+	vec2 uv;
+	
+	uv.x = pt.x*f[0] + c[0];
+	uv.y = pt.y*f[1] + c[1];
+
+	return uv;
+}
+
+vec2 undistortAndProject(in vec3 pt, in float coeff[5], in vec2 f, in vec2 c) {
+	vec2 uv = undistort(vec2(pt.x / pt.z, pt.y / pt.z), coeff);
+
+	return project(uv, f, c);
+}
+
+vec2 findKnownDepth(in ivec2 pos, in ivec2 dir, in ivec2 imgSize) {
+	ivec2 curPos = pos;
+	vec2 d = vec2(0.0, 0.0);
+
+	while (true) {
+		curPos += dir;
+
+		if (curPos.x < 0)
+			break;
+		else if (curPos.x >= imgSize.x)
+			break;
+		if (curPos.y < 0)
+			break;
+		else if (curPos.y >= imgSize.y)
+			break;
+		
+		float flags = imageLoad(pointsMapIn, curPos).a;
+		if (flags >= KnownPoint) {
+			d.x = imageLoad(depthMapIn, curPos).a;			
+
+			float dx = float(curPos.x - pos.x);
+			float dy = float(curPos.y - pos.y);
+
+			d.y = sqrt(dx*dx + dy*dy);
+
+			break;
+		}
+	}
+
+	return d;
+}
+
+float estimateDepth(in ivec2 pos, in ivec2 imgSize) {
+	vec2 d[8];
+
+	d[0] = findKnownDepth(pos, ivec2(-1, -1), imgSize);
+	d[1] = findKnownDepth(pos, ivec2(-1,  0), imgSize);
+	d[2] = findKnownDepth(pos, ivec2(-1,  1), imgSize);
+	d[3] = findKnownDepth(pos, ivec2( 0, -1), imgSize);
+	d[4] = findKnownDepth(pos, ivec2( 0,  1), imgSize);
+	d[5] = findKnownDepth(pos, ivec2( 1, -1), imgSize);
+	d[6] = findKnownDepth(pos, ivec2( 1,  0), imgSize);
+	d[7] = findKnownDepth(pos, ivec2( 1,  1), imgSize);
+
+	float dSum = 0.0;
+	float dSumWeight = 0.0;
+	for (int i = 0; i < 8; i++) {
+		float dtWeight = (d[i].y != 0.0 ? (float(imgSize.x) - d[i].y) / float(imgSize.x) : 0.0);
+		dSum += (d[i].x * dtWeight);
+		dSumWeight += dtWeight;
+	}
+
+	return dSum / dSumWeight;	
+}
+
+void main() {
+	ivec2 colorImageSize = imageSize(colorImage);
+	ivec2 depthMapSize = imageSize(depthMapIn);
+
+	ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+
+	if(pos.x >= depthMapSize.x)
+		return;
+	if(pos.y >= depthMapSize.y)
+		return;
+	
+	float flags = imageLoad(pointsMapIn, pos).w;
+	ivec2 posMap = pos;
+	posMap.x /= 2;
+	vec4 ptMapping = imageLoad(ptMappingMapImage, posMap);
+	
+	vec2 ptDepth;
+	int offset = (pos.x % 2)*2;
+	ptDepth.x = ptMapping[offset];
+	ptDepth.y = ptMapping[offset + 1];
+
+	if (flags >= KnownPoint) {// Known, no need to do anything
+		vec4 point = imageLoad(pointsMapIn, pos);	
+		imageStore(pointsMapOut, pos, point);	
+
+		vec4 depth = imageLoad(depthMapIn, pos);
+		imageStore(depthMapOut, pos, depth);
+		return;
+	} else if ((ptDepth.x == 0.0) && (ptDepth.y == 0.0)) // The pixel is not mapped to a valid location
+		return;
+
+	vec3 ptTrans = vec3(pose_im*vec4(ptDepth.xy, 1.0, 1.0));
+	ivec2 ptColor = ivec2(undistortAndProject(ptTrans, coeff_im, f_im, c_im) + 0.5);
+	
+	if (ptColor.x < 0)
+		return;
+	if (ptColor.x >= colorImageSize.x)
+		return;
+	if (ptColor.y < 0)
+		return;
+	if (ptColor.y >= colorImageSize.y)	
+		return;
+
+	vec4 color = imageLoad(colorImage, ptColor);
+
+	if (fillWithMax)
+		color.a = MaxDepth;
+	else
+		color.a = estimateDepth(pos, depthMapSize);
+
+	imageStore(depthMapOut, pos, color);
+	
+	vec4 point;	
+	point.z = (color.a - pose_im[3][2]) / (pose_im[0][2] * ptDepth.x + pose_im[1][2] * ptDepth.y + pose_im[2][2]);
+	point.x = ptDepth.x*point.z;
+	point.y = ptDepth.y*point.z;
+	point.w += KnownPoint;
+
+	imageStore(pointsMapOut, pos, point);	
+}
